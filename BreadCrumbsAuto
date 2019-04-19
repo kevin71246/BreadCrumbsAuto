@@ -1,0 +1,196 @@
+<?php
+/**
+ * BreadcrumbsAuto
+ * For documentation, please see MediaWiki URL???
+ *
+ * @ingroup Extensions
+ * @author Kevin Michau
+ * @version 0.1
+ */
+//__________________________________________________________________________________________________________________________
+// PARAMETERS
+
+define('BREADCRUMBSAUTO_VERSION','1.0, 2019-04-19');
+ 
+//Extension credits that show up on Special:Version
+$wgExtensionCredits['parserhook'][] = array(
+	'name' => 'BreadcrumbsAuto',
+	'url' => 'https://none.com',
+	'version' => BREADCRUMBSAUTO_VERSION,
+	'author' => 'Kevin Michau',
+	'description' => 'Automagic Hierarchical Breadcrumbs - Pages created from MAIN PAGE become children, this extension displays it as such.'
+);
+ 
+// SET DEFAULTS - Otherwise taken from LocalSettings.php
+$breadcrumbsAuto_DL = " > "; 									// Character to mark the stages of the breadcrumb?
+$breadcrumbsAuto_maxBreadcrumbs = 5; 							// Maximum number of links in breadcrumb (Main Page & Current page dont count)
+$breadcrumbsAuto_maxBreadcrumbGroups = 5; 						// Maximum number of breadcrumb groups (entire line of breadcrumbs is 1 group)
+$breadcrumbsAuto_maxPrefix = "[...]"; 							// Prefix if breadcrumb is longer than maxBreadcrumbs
+$breadcrumbsAuto_prefix = "BreadcrumbsAuto Hierarchy: ";		// Text to put before breadcrumb
+$breadcrumbsAuto_currentPageLink = true;						// Show current page as a link
+//__________________________________________________________________________________________________________________________
+// INITIALIZE
+ 
+$wgHooks['OutputPageBeforeHTML'][] = 'BreadcrumbsAuto';			//Set up the MediaWiki hook
+$breadcrumbsAry = array();
+$breadcrumbsAuto_maxBreadcrumbs_count = 0;
+//__________________________________________________________________________________________________________________________
+function BreadcrumbsAuto(&$data, &$page_body) {	
+	//echo "<pre><p><br><font color=black>BreadcrumbsAuto()<br></pre>";
+    global $wgTitle, $wgScript, $action, $breadcrumbsAuto_DL, $breadcrumbsAuto_maxBreadcrumbs, $breadcrumbsAuto_maxBreadcrumbGroups, $breadcrumbsAuto_maxPrefix, $breadcrumbsAuto_prefix, $breadcrumbsAuto_currentPageLink;
+	global $breadcrumbsAry, $breadcrumbsAuto_maxBreadcrumbs_count;
+	
+	// Dont do breadcrumbs for these conditions & return
+    if($action == 'edit' ) return true;
+    if($action == 'history' ) return true;
+	if($_GET['action'] != "") return true;									//if there are any actions, dont do anything & return
+    if($wgTitle->getPrefixedText() == 'Main Page' ) return true;
+    if(strpos($wgTitle->getPrefixedText(), 'User:' ) === 0 ) return true;
+    if(strpos($wgTitle->getPrefixedText(), 'Special:' ) === 0 ) return true;
+    if(strpos($wgTitle->getPrefixedText(), 'File:' ) === 0 ) return true;
+	
+	$page_title_formatted = $data->getTitle();								//This is a page title with a space in it, clean format
+	$page_title = str_replace(" ", "_", "$page_title_formatted");			//This is a page title with an underscore as a space. This is what links & db use
+	
+	//echo "<pre>"; echo "<p>"; echo "</pre>";								//DEBUG - This bumps lines down enough so we can see debug output below
+
+	// Start with current page and get parent(s) (incoming links)
+	$parents = getParents($page_title);
+	//echo "Parents:" . count($parents) .  "<br>";
+	// If page has no parent (incoming) links then dont do anything (Ex: A page can be linked to side navigation & no other links, or can be an orphan)
+	if(count($parents) < 1){
+		$breadcrumbsAry[] = "(orphan)$breadcrumbsAuto_DL" . getURL($page_title);
+		//return true;
+	}else{										
+		// Iterate results of parent(s) for given page & makes breadcrumb group array
+		$breadcrumbsAryCount = 0;
+		foreach($parents as $parent){
+			$breadcrumbsAuto_maxBreadcrumbs_count=0;
+			//echo "<pre><p><br>**$page_title - Main Parent:$parent->parent_page_title<br></pre>";
+			// Only get crumbs if immediate parent is NOT main
+			if($parent->parent_page_title != "Main_Page"){
+				makeCrumbs($breadcrumbsAryCount, $parent->parent_page_title);
+				// Add main link in the beginning - Add generated breadcrumbs in the middle - Add current page at the very end
+				if(strpos($breadcrumbsAry[$breadcrumbsAryCount], '(orphan') !== false) {		//If (orphan) is found, dont put in "Main Page" since thats not true, we couldnt trace it back
+					$breadcrumbsAry[$breadcrumbsAryCount] = $breadcrumbsAry[$breadcrumbsAryCount] . "$breadcrumbsAuto_DL" .getURL($page_title);
+				}else{
+					$breadcrumbsAry[$breadcrumbsAryCount] = getURL("Main_Page") . "$breadcrumbsAuto_DL" . $breadcrumbsAry[$breadcrumbsAryCount] . "$breadcrumbsAuto_DL" .getURL($page_title);
+				}
+			}else{
+				// Add main link in the beginning - Add current page at the very end
+				if(strpos($breadcrumbsAry[$breadcrumbsAryCount], '(orphan') !== false) {		//If (orphan) is found, dont put in "Main Page" since thats not true, we couldnt trace it back
+					$breadcrumbsAry[$breadcrumbsAryCount] = getURL($page_title);
+				}else{
+					$breadcrumbsAry[$breadcrumbsAryCount] = getURL("Main_Page") . "$breadcrumbsAuto_DL" .getURL($page_title);
+				}
+			}		
+			$breadcrumbsAryCount++;
+		}
+	}
+	
+	$breadcrumbs = "";
+	foreach($breadcrumbsAry as $breadcrumb){
+		$breadcrumbs .= "$breadcrumb<br>";
+	}
+	$page_body = "<small>$breadcrumbs</small>" . $page_body;
+	
+	//echo "<pre>";
+	//print_r($breadcrumbsAry);
+	//print_r($wgTitle);
+	//print_r($parents);
+	//echo "</pre>";	
+	
+    return true;
+}
+//__________________________________________________________________________________________________________________________
+// 
+function makeCrumbs($index, $page_title){
+	global $breadcrumbsAry, $breadcrumbsAuto_DL, $breadcrumbsAuto_maxBreadcrumbs, $breadcrumbsAuto_maxPrefix, $breadcrumbsAuto_maxBreadcrumbs_count;
+	//echo "<br>makeCrumbs(): $page_title";
+	$breadcrumbsAuto_maxBreadcrumbs_count++;
+	if($breadcrumbsAuto_maxBreadcrumbs_count > $breadcrumbsAuto_maxBreadcrumbs){
+		//$breadcrumbsAry[$index] = $breadcrumbsAuto_maxPrefix;
+		$breadcrumbsAry[$index] = $breadcrumbsAuto_maxPrefix . $breadcrumbsAry[$index];
+		return;
+	}
+	
+	if($page_title == "Main_Page"){		//If parent is main_page, our job is done
+		return;
+	}
+	$parents = getParents($page_title);
+	//foreach($parents as $parent){			//This really gets insane! Not sure well be able to, or want to, get it to work. 
+											//A page can link directly to subject page. And another page can link both to subject page and page that links to it almost creating an infinite linking schema
+											//If we accounted for ALL of these links, it probably wouldnt be useful to user and way too much junk breadcrumbs
+		$parent = $parents[0];
+		//echo "<br>makeCrumbs() Parent: $parent->parent_page_title";
+		// Add Main Page to breadcrumbAdd, and max limit text if we hit the limit
+		//if($parent->parent_page_title != "Main_Page" && ){
+		if($parent->parent_page_title != "Main_Page" && count($parents) > 0){							//if(count($parents) < 1) return true;
+			//echo "<pre>"; echo "<p><br>doesnt equal Main_Page $parent->parent_page_title <br></pre>";
+			$breadcrumbsAry[$index] = "$breadcrumbsAuto_DL" . getURL($parent->requesting_page_title) . $breadcrumbsAry[$index];
+			// Control our breadcrumb depth via setting
+			//echo $breadcrumbsAuto_maxBreadcrumbs_count ."-".$breadcrumbsAuto_maxBreadcrumbs;
+			/*if($breadcrumbsAuto_maxBreadcrumbs_count < $breadcrumbsAuto_maxBreadcrumbs){
+				$breadcrumbsAuto_maxBreadcrumbs_count++;
+				makeCrumbs($index, $parent->parent_page_title);
+			}else{
+				$breadcrumbsAry[$index] = $breadcrumbsAuto_maxPrefix;
+				return;
+			}*/
+			makeCrumbs($index, $parent->parent_page_title);
+			//echo "<pre>"; echo "<p><br>******THIS SHOULDNT GET RUN BUT IT DOES!!******<br></pre>";
+		// No results (parent)
+		}else if(count($parents) < 1){ 
+			//return true;
+			//$breadcrumbsAry[$index] = "JJJ" . getURL($parent->requesting_page_title) . $breadcrumbsAry[$index];
+			//$breadcrumbsAry[$index] = getURL($parent->parent_page_title);
+			$breadcrumbsAry[$index] = "(orphan)$breadcrumbsAuto_DL" . getURL($page_title);
+		}else{
+			//echo "<pre>"; echo "<p><br>$parent->parent_page_title ROOT<br></pre>";
+			$breadcrumbsAry[$index] = getURL($parent->requesting_page_title) . $breadcrumbsAry[$index];
+		}
+	//}
+}
+//__________________________________________________________________________________________________________________________
+// SQL to find "What links Here" - this is being used to find a pages parent. If more than 1 page links here...?
+function getParents($page_title){	
+	global $breadcrumbsAuto_maxBreadcrumbGroups;
+	//echo "<pre><p><br>getParent() for $page_title<br></pre>";
+	$dbr = wfGetDB(DB_MASTER);
+	$sql = "SELECT 
+				page_id, page_namespace, page_title, rd_from, page_is_redirect  
+			FROM (
+				--SELECT TOP 10 pl_from, rd_from  
+				--SELECT TOP 1 pl_from, rd_from  
+				SELECT TOP $breadcrumbsAuto_maxBreadcrumbGroups pl_from, rd_from
+				FROM [pagelinks] 
+				LEFT JOIN [redirect] ON ((rd_from = pl_from) AND rd_title = '".$page_title."' AND (rd_interwiki = '' OR rd_interwiki IS NULL) AND rd_namespace = '0') 
+				INNER JOIN [page] ON ((pl_from = page_id))   
+				WHERE pl_namespace = '0' AND pl_title = '".$page_title."' AND (pl_from_namespace = '0')  
+				ORDER BY pl_from ) [temp_backlink_range] 
+			INNER JOIN [page] ON ((pl_from = page_id))    
+			ORDER BY page_id";
+	//echo "<p>$sql<p>";											//DEBUG
+	$res = $dbr->query($sql);
+	//echo "<pre>"; print_r($res); echo "</pre>";					//DEBUG this has query but no results
+	//echo "<pre>"; print_r($resObj); echo "</pre>";				//DEBUG this has only first result/row
+
+	$num_results = $dbr->numRows($res);
+	// Iterate sql rows & put results into array
+	for($i=0; $i < $num_results; $i++){
+		$resObj = $dbr->fetchObject($res);							//Get next row
+		$results[$i] = $resObj;										//put results into array
+		$results[$i]->requesting_page_title = $page_title;
+		$results[$i]->parent_page_title = $resObj->page_title;
+		$results[$i]->parent_url = getURL($resObj->page_title);
+	}
+	return $results;	//return array with sql results as rows
+}
+//__________________________________________________________________________________________________________________________
+// Make URL from a page title
+function getURL($page_title){
+	$url = "<a href='{$wgScript}?title=" . $page_title . "'>" . str_replace("_", " ", $page_title) . "</a>";
+	return $url;
+}
+//__________________________________________________________________________________________________________________________
+?>
